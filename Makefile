@@ -229,3 +229,20 @@ build_cartridge_engine:
 
 install_release:
 	(cd sbroad; make install_release)
+	vrun:
+	PICODATA_LOG_LEVEL=verbose RUST_LOG=debug RUST_BACKTRACE=1 \
+	cargo run -- run \
+		-l 127.0.0.1:3301 --advertise 127.0.0.1:3301 \
+		--peer 127.0.0.1:3301 \
+		--http-listen 127.0.0.1:8081 \
+		--plugin-dir /home/knyazev-na/study/DBMS/Picodata/weather_cache/build
+rrun:
+	cargo run -- run \
+		-l 127.0.0.1:3301 --advertise 127.0.0.1:3301 \
+		--peer 127.0.0.1:3301 \
+		--http-listen 127.0.0.1:8081
+wrun:
+	cargo watch -q -c -w src/ -w sbroad/sbroad-core/src -x \
+		"run -- run -l 127.0.0.1:3301 --advertise 127.0.0.1:3301 --peer 127.0.0.1:3301 --http-listen 127.0.0.1:8081"
+adm:
+	./target/debug/picodata admin admin.sock

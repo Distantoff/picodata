@@ -102,7 +102,7 @@ where
 
         // Try to collect buckets from expression of type `sharding_key = value`
         if let Expression::Bool(BoolExpr {
-            op: Bool::Eq | Bool::In,
+            op: op @ (Bool::Eq | Bool::In),
             left,
             right,
             ..
@@ -126,9 +126,16 @@ where
                 } else {
                     continue;
                 };
+                dbg!(&left_expr);
+                dbg!(&right_expr);
 
                 // Get the distribution of the left row.
                 let left_dist = ir_plan.get_distribution(left_id)?;
+                dbg!(&left_dist);
+                let right_dist = ir_plan.get_distribution(right_id)?;
+                dbg!(&right_dist);
+
+                    dbg!("Here 2");
 
                 // Gather buckets from the right row.
                 if let Distribution::Segment { keys } = left_dist {
@@ -151,6 +158,12 @@ where
                         }
                     }
 
+                    if *op == Bool::In {
+                        // continue;
+                    }
+
+                    dbg!("Here 1");
+
                     // The right side is a regular row or subquery which distribution
                     // didn't result in Motion creation (e.g. `"a" in (select "a" from t)`).
                     // So we have a case of `Eq` operator.
@@ -166,6 +179,7 @@ where
                     // which satisfy `(a, b) = (0, 1)`.
                     for key in keys.iter() {
                         let mut values: Vec<&Value> = Vec::new();
+                        // dbg!(&op);
                         for position in &key.positions {
                             let right_column_id =
                                 *right_columns.get(*position).ok_or_else(|| {
@@ -176,9 +190,12 @@ where
                                 })?;
                             let right_column_expr = ir_plan.get_expression_node(right_column_id)?;
                             if let Expression::Constant(_) = right_column_expr {
-                                values.push(ir_plan.as_const_value_ref(right_column_id)?);
+                                let val = ir_plan.as_const_value_ref(right_column_id);
+                                dbg!(&val);
+                                values.push(val?);
                             } else {
                                 // One of the columns is not a constant. Skip this key.
+                                dbg!("its not a constant");
                                 values = Vec::new();
                                 break;
                             }
@@ -188,6 +205,7 @@ where
                                 .coordinator
                                 .get_vshard_object_by_tier(tier)?
                                 .determine_bucket_id(&values)?;
+                            dbg!(&bucket);
                             let bucket_set: HashSet<u64, RepeatableState> =
                                 vec![bucket].into_iter().collect();
                             buckets.push(Buckets::new_filtered(bucket_set));
@@ -262,8 +280,11 @@ where
             // Nodes in the chain are in the top-down order (from left to right).
             // We need to pop back the chain to get nodes in the bottom-up order.
             while let Some(node_id) = nodes.pop_back() {
-                let node_buckets = self
-                    .get_buckets_from_expr(node_id)?
+                let buckets = self
+                    .get_buckets_from_expr(node_id);
+                // dbg!(&buckets);
+
+                let node_buckets = buckets?
                     .unwrap_or(default_buckets.clone());
                 chain_buckets = chain_buckets.conjuct(&node_buckets)?;
             }
