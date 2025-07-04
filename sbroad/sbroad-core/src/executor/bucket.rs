@@ -97,12 +97,11 @@ where
         // See the logic of its handling below.
         let mut buckets: Vec<Buckets> = vec![];
         let ir_plan = self.exec_plan.get_ir_plan();
-        let tier = self.exec_plan.get_ir_plan().tier.as_ref();
         let expr = ir_plan.get_expression_node(expr_id)?;
 
         // Try to collect buckets from expression of type `sharding_key = value`
         if let Expression::Bool(BoolExpr {
-            op: Bool::Eq | Bool::In,
+            op: op @ (Bool::Eq | Bool::In),
             left,
             right,
             ..
@@ -151,46 +150,60 @@ where
                         }
                     }
 
-                    // The right side is a regular row or subquery which distribution
-                    // didn't result in Motion creation (e.g. `"a" in (select "a" from t)`).
-                    // So we have a case of `Eq` operator.
-                    // If we have a case of constants on the positions of the left keys,
-                    // we can return `Buckets::Filtered`.
-                    // E.g. we have query
-                    // `SELECT * FROM (SELECT A.a, B.b FROM A JOIN B ON A.a = B.b)
-                    //  WHERE (a, b) = (0, 1)`.
-                    // Here (a, b) row will have Distribution::Segment(keys = {[a], [b]}).
-                    // After handling key "a" we will leave buckets which satisfy `a = 0`.
-                    // After handling key "b" we will leave buckets which satisfy `b = 1`.
-                    // In the end (when `conjuct` function is called) we will leave buckets
-                    // which satisfy `(a, b) = (0, 1)`.
-                    for key in keys.iter() {
-                        let mut values: Vec<&Value> = Vec::new();
-                        for position in &key.positions {
-                            let right_column_id =
-                                *right_columns.get(*position).ok_or_else(|| {
-                                    SbroadError::NotFound(
-                                        Entity::Column,
-                                        format_smolstr!("at position {position} for right row"),
-                                    )
-                                })?;
+                    match (*op, right_columns.len()) {
+                        (Bool::In, 1) => {
+                            // In case `In` operator and single right column (in the example the constant "1"),
+                            // with query like `SELECT * FROM t5 JOIN t5 ON 1 IN (t1.b, t1.a)`
+                            // we don't need to check distribution key position for number
+                            // of row columns, as in the code below.
+                            // Also if this single column is a constant, we can get Buckets::Filtered.
+                            let right_column_id = right_columns[0];
                             let right_column_expr = ir_plan.get_expression_node(right_column_id)?;
                             if let Expression::Constant(_) = right_column_expr {
-                                values.push(ir_plan.as_const_value_ref(right_column_id)?);
-                            } else {
-                                // One of the columns is not a constant. Skip this key.
-                                values = Vec::new();
-                                break;
+                                let value = ir_plan.as_const_value_ref(right_column_id)?;
+                                self.add_values_to_buckets(&mut buckets, &[value])?;
                             }
                         }
-                        if !values.is_empty() {
-                            let bucket = self
-                                .coordinator
-                                .get_vshard_object_by_tier(tier)?
-                                .determine_bucket_id(&values)?;
-                            let bucket_set: HashSet<u64, RepeatableState> =
-                                vec![bucket].into_iter().collect();
-                            buckets.push(Buckets::new_filtered(bucket_set));
+                        _ => {
+                            // The right side is a regular row or subquery which distribution
+                            // didn't result in Motion creation (e.g. `"a" in (select "a" from t)`).
+                            // So we have a case of `Eq` operator.
+                            // If we have a case of constants on the positions of the left keys,
+                            // we can return `Buckets::Filtered`.
+                            // E.g. we have query
+                            // `SELECT * FROM (SELECT A.a, B.b FROM A JOIN B ON A.a = B.b)
+                            //  WHERE (a, b) = (0, 1)`.
+                            // Here (a, b) row will have Distribution::Segment(keys = {[a], [b]}).
+                            // After handling key "a" we will leave buckets which satisfy `a = 0`.
+                            // After handling key "b" we will leave buckets which satisfy `b = 1`.
+                            // In the end (when `conjuct` function is called) we will leave buckets
+                            // which satisfy `(a, b) = (0, 1)`.
+                            for key in keys.iter() {
+                                let mut values: Vec<&Value> = Vec::new();
+                                for position in &key.positions {
+                                    let right_column_id =
+                                        *right_columns.get(*position).ok_or_else(|| {
+                                            SbroadError::NotFound(
+                                                Entity::Column,
+                                                format_smolstr!(
+                                                    "at position {position} for right row"
+                                                ),
+                                            )
+                                        })?;
+                                    let right_column_expr =
+                                        ir_plan.get_expression_node(right_column_id)?;
+                                    if let Expression::Constant(_) = right_column_expr {
+                                        values.push(ir_plan.as_const_value_ref(right_column_id)?);
+                                    } else {
+                                        // One of the columns is not a constant. Skip this key.
+                                        values = Vec::new();
+                                        break;
+                                    }
+                                }
+                                if !values.is_empty() {
+                                    self.add_values_to_buckets(&mut buckets, &values)?;
+                                }
+                            }
                         }
                     }
                 }
@@ -210,6 +223,21 @@ where
             .into_inner()?;
 
         Ok(Some(merged))
+    }
+
+    fn add_values_to_buckets(
+        &self,
+        buckets: &mut Vec<Buckets>,
+        values: &[&Value],
+    ) -> Result<(), SbroadError> {
+        let tier = self.exec_plan.get_ir_plan().tier.as_ref();
+        let bucket = self
+            .coordinator
+            .get_vshard_object_by_tier(tier)?
+            .determine_bucket_id(values)?;
+        let bucket_set: HashSet<u64, RepeatableState> = vec![bucket].into_iter().collect();
+        buckets.push(Buckets::new_filtered(bucket_set));
+        Ok(())
     }
 
     /// Inner logic of `bucket_discovery` for expressions (currently it's called only on

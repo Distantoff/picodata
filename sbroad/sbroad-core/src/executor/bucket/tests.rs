@@ -449,6 +449,26 @@ fn global_tbl_join6() {
 }
 
 #[test]
+fn tbl_join_single_constant_condition1() {
+    let query = r#"
+    select * from "t5"
+    inner join "t5" as "jt5"
+    on 1 in ("jt5"."b", "jt5"."a")
+"#;
+
+    let coordinator = RouterRuntimeMock::new();
+    let mut query = Query::new(&coordinator, query, vec![]).unwrap();
+    let plan = query.exec_plan.get_ir_plan();
+    let top = plan.get_top().unwrap();
+    let buckets = query.bucket_discovery(top).unwrap();
+    let param = Value::from(1_u64);
+    let bucket = query.coordinator.determine_bucket_id(&[&param]).unwrap();
+    let bucket_set: HashSet<u64, RepeatableState> = vec![bucket].into_iter().collect();
+
+    assert_eq!(Buckets::new_filtered(bucket_set), buckets);
+}
+
+#[test]
 fn global_tbl_groupby() {
     let query = r#"select "a", avg("b") from "global_t" group by "a" having sum("b") > 10"#;
 
