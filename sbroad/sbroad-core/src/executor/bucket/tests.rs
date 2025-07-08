@@ -450,6 +450,7 @@ fn global_tbl_join6() {
 
 #[test]
 fn tbl_join_single_constant_condition1() {
+    // t5 sharded by (a)
     let query = r#"
     select * from "t5"
     inner join "t5" as "jt5"
@@ -464,6 +465,97 @@ fn tbl_join_single_constant_condition1() {
     let param = Value::from(1_u64);
     let bucket = query.coordinator.determine_bucket_id(&[&param]).unwrap();
     let bucket_set: HashSet<u64, RepeatableState> = vec![bucket].into_iter().collect();
+
+    assert_eq!(Buckets::new_filtered(bucket_set), buckets);
+}
+
+#[test]
+fn tbl_join_single_constant_condition2() {
+    // t5 sharded by (a)
+    let query = r#"
+    select * from "t5"
+    inner join "t5" as "jt5"
+    on 1 in ("jt5"."a", "jt5"."a")
+"#;
+
+    let coordinator = RouterRuntimeMock::new();
+    let mut query = Query::new(&coordinator, query, vec![]).unwrap();
+    let plan = query.exec_plan.get_ir_plan();
+    let top = plan.get_top().unwrap();
+    let buckets = query.bucket_discovery(top).unwrap();
+    let param = Value::from(1_u64);
+    let bucket = query.coordinator.determine_bucket_id(&[&param]).unwrap();
+    let bucket_set: HashSet<u64, RepeatableState> = vec![bucket].into_iter().collect();
+
+    assert_eq!(Buckets::new_filtered(bucket_set), buckets);
+}
+
+#[test]
+fn tbl_join_single_constant_condition3() {
+    // t sharded by (a, b)
+    let query = r#"
+    select * from "t"
+    inner join "t" as "jt"
+    on 1 in ("jt"."a", "jt"."b")
+"#;
+
+    let coordinator = RouterRuntimeMock::new();
+    let mut query = Query::new(&coordinator, query, vec![]).unwrap();
+    let plan = query.exec_plan.get_ir_plan();
+    let top = plan.get_top().unwrap();
+    let buckets = query.bucket_discovery(top).unwrap();
+
+    assert_eq!(Buckets::All, buckets);
+}
+
+#[test]
+fn tbl_join_tuple_constant_condition1() {
+    // t sharded by (a, b)
+    let query = r#"
+    select * from "t"
+    inner join "t" as "jt"
+    on (1, 2) in (select a, b from t);
+"#;
+
+    let coordinator = RouterRuntimeMock::new();
+    let mut query = Query::new(&coordinator, query, vec![]).unwrap();
+    let plan = query.exec_plan.get_ir_plan();
+    let top = plan.get_top().unwrap();
+    let buckets = query.bucket_discovery(top).unwrap();
+    let param1 = Value::from(1_u64);
+    let param2 = Value::from(2_u64);
+    let bucket = query
+        .coordinator
+        .determine_bucket_id(&[&param1, &param2])
+        .unwrap();
+    let bucket_set: HashSet<u64, RepeatableState> = vec![bucket].into_iter().collect();
+
+    assert_eq!(Buckets::new_filtered(bucket_set), buckets);
+}
+
+#[test]
+fn tbl_join_tuple_constant_condition2() {
+    // t5 sharded by (a)
+
+    let query = r#"
+    select * from "t5"
+    inner join "t5" as "jt5"
+    on "t5"."a" in (1,2,3);
+"#;
+
+    let coordinator = RouterRuntimeMock::new();
+    let mut query = Query::new(&coordinator, query, vec![]).unwrap();
+    let plan = query.exec_plan.get_ir_plan();
+    let top = plan.get_top().unwrap();
+    let buckets = query.bucket_discovery(top).unwrap();
+    let param1 = Value::from(1_u64);
+    let param2 = Value::from(2_u64);
+    let param3 = Value::from(3_u64);
+    let bucket1 = query.coordinator.determine_bucket_id(&[&param1]).unwrap();
+    let bucket2 = query.coordinator.determine_bucket_id(&[&param2]).unwrap();
+    let bucket3 = query.coordinator.determine_bucket_id(&[&param3]).unwrap();
+    let bucket_set: HashSet<u64, RepeatableState> =
+        vec![bucket1, bucket2, bucket3].into_iter().collect();
 
     assert_eq!(Buckets::new_filtered(bucket_set), buckets);
 }

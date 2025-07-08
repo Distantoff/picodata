@@ -107,7 +107,7 @@ where
             ..
         }) = expr
         {
-            let pairs = vec![(*left, *right), (*right, *left)];
+            let pairs = [(*left, *right), (*right, *left)];
             for (left_id, right_id) in pairs {
                 let left_expr = ir_plan.get_expression_node(left_id)?;
                 if !matches!(left_expr, Expression::Row(_) | Expression::Reference(_)) {
@@ -150,36 +150,48 @@ where
                         }
                     }
 
-                    match (*op, right_columns.len()) {
-                        (Bool::In, 1) => {
-                            // In case `In` operator and single right column (in the example the constant "1"),
-                            // with query like `SELECT * FROM t5 JOIN t5 ON 1 IN (t1.b, t1.a)`
-                            // we don't need to check distribution key position for number
-                            // of row columns, as in the code below.
-                            // Also if this single column is a constant, we can get Buckets::Filtered.
-                            let right_column_id = right_columns[0];
-                            let right_column_expr = ir_plan.get_expression_node(right_column_id)?;
-                            if let Expression::Constant(_) = right_column_expr {
-                                let value = ir_plan.as_const_value_ref(right_column_id)?;
-                                self.add_values_to_buckets(&mut buckets, &[value])?;
+                    for key in keys.iter() {
+                        let mut values: Vec<&Value> = Vec::new();
+
+                        match (*op, right_columns.len()) {
+                            (Bool::In, 1) => {
+                                // In case `In` operator and single right column (Since the
+                                // Distribution::Segment is on the left side at this
+                                // stage, condition can be represented as `(t1.b, t1.a) IN 1`,
+                                // therefore right column is "1", left columns is `(t1.b, t1.a)`),
+                                // with query like `SELECT * FROM t JOIN t AS t1 ON 1 IN (t1.b, t1.a)`
+                                // we don't need to check distribution key position for number
+                                // of row columns, as in the code below, because for single column
+                                // we can't use composite key.
+                                // Also if this single column is a constant, we can get Buckets::Filtered.
+                                if key.positions.len() == 1 {
+                                    let right_column_id = right_columns[0];
+                                    let right_column_expr =
+                                        ir_plan.get_expression_node(right_column_id)?;
+                                    if let Expression::Constant(_) = right_column_expr {
+                                        // Since we have the only value, it's enough for us to find one bucket.
+                                        // Because there will be identical buckets for the same value and type.
+                                        // Therefore break the cycle.
+                                        let value = ir_plan.as_const_value_ref(right_column_id)?;
+                                        self.add_values_to_buckets(&mut buckets, &[value])?;
+                                        break;
+                                    }
+                                }
                             }
-                        }
-                        _ => {
-                            // The right side is a regular row or subquery which distribution
-                            // didn't result in Motion creation (e.g. `"a" in (select "a" from t)`).
-                            // So we have a case of `Eq` operator.
-                            // If we have a case of constants on the positions of the left keys,
-                            // we can return `Buckets::Filtered`.
-                            // E.g. we have query
-                            // `SELECT * FROM (SELECT A.a, B.b FROM A JOIN B ON A.a = B.b)
-                            //  WHERE (a, b) = (0, 1)`.
-                            // Here (a, b) row will have Distribution::Segment(keys = {[a], [b]}).
-                            // After handling key "a" we will leave buckets which satisfy `a = 0`.
-                            // After handling key "b" we will leave buckets which satisfy `b = 1`.
-                            // In the end (when `conjuct` function is called) we will leave buckets
-                            // which satisfy `(a, b) = (0, 1)`.
-                            for key in keys.iter() {
-                                let mut values: Vec<&Value> = Vec::new();
+                            _ => {
+                                // The right side is a regular row or subquery which distribution
+                                // didn't result in Motion creation (e.g. `"a" in (select "a" from t)`).
+                                // So we have a case of `Eq` operator.
+                                // If we have a case of constants on the positions of the left keys,
+                                // we can return `Buckets::Filtered`.
+                                // E.g. we have query
+                                // `SELECT * FROM (SELECT A.a, B.b FROM A JOIN B ON A.a = B.b)
+                                //  WHERE (a, b) = (0, 1)`.
+                                // Here (a, b) row will have Distribution::Segment(keys = {[a], [b]}).
+                                // After handling key "a" we will leave buckets which satisfy `a = 0`.
+                                // After handling key "b" we will leave buckets which satisfy `b = 1`.
+                                // In the end (when `conjuct` function is called) we will leave buckets
+                                // which satisfy `(a, b) = (0, 1)`.
                                 for position in &key.positions {
                                     let right_column_id =
                                         *right_columns.get(*position).ok_or_else(|| {
@@ -200,10 +212,10 @@ where
                                         break;
                                     }
                                 }
-                                if !values.is_empty() {
-                                    self.add_values_to_buckets(&mut buckets, &values)?;
-                                }
                             }
+                        }
+                        if !values.is_empty() {
+                            self.add_values_to_buckets(&mut buckets, &values)?;
                         }
                     }
                 }
