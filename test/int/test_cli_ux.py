@@ -93,6 +93,24 @@ def test_connect_ux(cluster: Cluster):
     cli.sendline("")
     cli.expect_exact("0")
 
+    # formatting remains correct with newline characters at the end of the command
+    cli.sendline(
+        "CREATE TABLE customer (customer_id INTEGER NOT NULL, name STRING NOT NULL, PRIMARY KEY(customer_id)) USING memtx DISTRIBUTED BY (customer_id);  \t   "
+        "CREATE TABLE accounts (account_id INTEGER NOT NULL, customer_id INTEGER NOT NULL, name STRING, balance UNSIGNED, PRIMARY KEY (account_id)) USING memtx DISTRIBUTED BY (customer_id);   \n   "
+        "   \n   "
+    )
+    cli.sendline(
+        "    INSERT INTO customer (customer_id, name) VALUES (1, 'customer 1');   \n  "
+        "INSERT INTO accounts (account_id, customer_id, name, balance) VALUES (1, 1, 'main account', 0);    \t "
+        "   \n   "
+    )
+
+    cli.expect_exact("1")
+    cli.expect_exact("1")
+    cli.expect_exact("1")
+    cli.expect_exact("1")
+    cli.expect_exact("sql> ")
+
 
 def test_admin_ux(cluster: Cluster):
     i1 = cluster.add_instance(wait_online=False)
